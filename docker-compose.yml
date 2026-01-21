@@ -1,0 +1,127 @@
+services:
+  
+  opc-server-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.simulator
+    container_name: opc-server-1
+    environment:
+      - SERVER_NAME=PlantLine1
+      - SERVER_PORT=4840
+      - ENDPOINT=opc.tcp://0.0.0.0:4840
+    ports:
+      - "4840:4840"
+    networks:
+      - opc-network
+
+  opc-server-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.simulator
+    container_name: opc-server-2
+    environment:
+      - SERVER_NAME=PlantLine2
+      - SERVER_PORT=4841
+      - ENDPOINT=opc.tcp://0.0.0.0:4841
+    ports:
+      - "4841:4841"
+    networks:
+      - opc-network
+
+  opc-server-3:
+    build:
+      context: .
+      dockerfile: Dockerfile.simulator
+    container_name: opc-server-3
+    environment:
+      - SERVER_NAME=PlantLine3
+      - SERVER_PORT=4842
+      - ENDPOINT=opc.tcp://0.0.0.0:4842
+    ports:
+      - "4842:4842"
+    networks:
+      - opc-network
+
+  
+
+  
+  node-a:
+    build:
+      context: .
+      dockerfile: Dockerfile.node
+    container_name: hub-node-a
+    environment:
+      - NODE_ID=node-a
+      - NODE_PORT=8000
+      - PEERS=node-b:8001,node-c:8002
+      - OPC_SERVERS=opc.tcp://opc-server-1:4840,opc.tcp://opc-server-2:4841,opc.tcp://opc-server-3:4842
+      - GOSSIP_INTERVAL=5
+      - ANTI_ENTROPY_INTERVAL=10
+      - JWT_SECRET="SatoshiNakamoto"
+    ports:
+      - "8000:8000"
+    volumes:
+      - node-a-data:/app/data
+    networks:
+      - opc-network
+    depends_on:
+      - opc-server-1
+      - opc-server-2
+      - opc-server-3
+
+  node-b:
+    build:
+      context: .
+      dockerfile: Dockerfile.node
+    container_name: hub-node-b
+    environment:
+      - NODE_ID=node-b
+      - NODE_PORT=8001
+      - PEERS=node-a:8000,node-c:8002
+      - OPC_SERVERS=opc.tcp://opc-server-1:4840,opc.tcp://opc-server-2:4841,opc.tcp://opc-server-3:4842
+      - GOSSIP_INTERVAL=5
+      - ANTI_ENTROPY_INTERVAL=10
+      - JWT_SECRET="SatoshiNakamoto"
+    ports:
+      - "8001:8001"
+    volumes:
+      - node-b-data:/app/data
+    networks:
+      - opc-network
+    depends_on:
+      - opc-server-1
+      - opc-server-2
+      - opc-server-3
+
+  node-c:
+    build:
+      context: .
+      dockerfile: Dockerfile.node
+    container_name: hub-node-c
+    environment:
+      - NODE_ID=node-c
+      - NODE_PORT=8002
+      - PEERS=node-a:8000,node-b:8001
+      - OPC_SERVERS=opc.tcp://opc-server-1:4840,opc.tcp://opc-server-2:4841,opc.tcp://opc-server-3:4842
+      - GOSSIP_INTERVAL=5
+      - ANTI_ENTROPY_INTERVAL=10
+      - JWT_SECRET="SatoshiNakamoto"
+    ports:
+      - "8002:8002"
+    volumes:
+      - node-c-data:/app/data
+    networks:
+      - opc-network
+    depends_on:
+      - opc-server-1
+      - opc-server-2
+      - opc-server-3
+
+volumes:
+  node-a-data:
+  node-b-data:
+  node-c-data:
+
+networks:
+  opc-network:
+    driver: bridge

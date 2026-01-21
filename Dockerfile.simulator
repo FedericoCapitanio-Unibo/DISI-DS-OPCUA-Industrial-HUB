@@ -1,0 +1,26 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# dipendenze
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    gcc \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+COPY pyproject.toml uv.lock ./
+
+# dipendenze python
+RUN uv sync --frozen --no-dev
+
+COPY src/simulator/ ./src/simulator/
+COPY src/common/ ./src/common/
+
+# esposizione porta per il servr opcua(verrà configurata anche da var di ambiente)
+EXPOSE 4840
+
+# run del server opcua simulato
+CMD ["uv", "run", "python", "-m", "src.simulator.opc_server"]

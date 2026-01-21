@@ -1,0 +1,379 @@
+"""
+layer di persistenza per i dati OPC UA usando SQLAlchemy + SQLite.
+gestisce salvataggio, query e sincronizzazione dei data point con lamport clock.
+"""
+
+from datetime import datetime
+from pathlib import Path
+import asyncio
+
+from sqlalchemy import String, Integer, Float, DateTime, Index, select, func, and_
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine, async_sessionmaker
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+from src.common.config import get_settings
+from src.common.models import OPCUADataPoint, QualityStatus
+from src.common.logger import get_logger
+
+logger = get_logger(__name__)
+
+
+class Base(DeclarativeBase):
+    """
+    base class per tutti i modelli SQLAlchemy. se devo aggiunge peculiarità a tutte è più facile perchè lo farò solo qui"""
+    
+    pass
+
+
+class DataPointRecord(Base):
+    """
+    tabella per salvare i data point OPC UA con lamport clock
+    - ogni record rappresenta un campionamento di un tag
+    """
+    __tablename__ = "data_points"
+    
+    # chiave primaria
+    lamport_clock: Mapped[int] = mapped_column(Integer, primary_key=True)
+    
+    #identificatori per i nodi opcua
+    tag: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    node_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    
+    # valore del nodo. di default è un float ma l'eventuale conversione verrà gestita dall'applicazione
+    value: Mapped[float] = mapped_column(Float, nullable=False)
+    
+    # altri dati del nodo
+    timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    quality: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default=QualityStatus.GOOD.value
+    )
+    source_server: Mapped[str] = mapped_column(String(255), nullable=False)
+    
+    #indici composti per query comuni
+    __table_args__ = (
+        Index("idx_tag_timestamp", "tag", "timestamp"),
+        Index("idx_tag_lc", "tag", "lamport_clock"),
+    )
+    
+    def __repr__(self) -> str:
+        return f"<DataPoint(lc={self.lamport_clock}, tag='{self.tag}', value={self.value})>"
+
+
+class StorageManager:
+    """
+    gestisce tutte le operazioni sul database SQLite
+    
+    """
+    
+    def __init__(self, db_path: Path | None = None) -> None:
+        """
+            db_path: path del file SQLite, se None usa config
+        """
+        if db_path is None:
+            settings = get_settings()
+            db_path = settings.get_db_path()
+        
+        self.db_path = db_path
+        self.engine: AsyncEngine | None = None
+        self.session_maker: async_sessionmaker[AsyncSession] | None = None
+        
+        logger.info(f"storage manager inizializzato con db: {self.db_path}")
+    
+    
+    async def initialize(self) -> None:
+        """
+        creazione del database engine e delle tabelle
+        !! chiamare questo metodo prima di usare lo storage
+        """
+
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # creazione engine
+        database_url = f"sqlite+aiosqlite:///{self.db_path}"
+        self.engine = create_async_engine(
+            database_url,
+            echo=False,             #da mettee a true per debug o dev
+            pool_pre_ping=True,
+        )
+        
+        #istanza della sessione
+        self.session_maker = async_sessionmaker(
+            self.engine,
+            class_=AsyncSession,
+            expire_on_commit=False
+        )
+        
+        # creazione tabelle
+        async with self.engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        
+        logger.info("database inizializzato e tabelle create")
+    
+    
+    async def close(self) -> None:
+        """chiusura connessioni al database"""
+        if self.engine:
+            try:
+                await self.engine.dispose()
+                logger.info("connessioni database chiuse")
+            except asyncio.CancelledError:
+                # ignoro lo spam si messaggi continuo in chiusura
+                logger.debug("CancelledError durante chiusura engine (normale durante shutdown)")
+            except Exception as e:
+                logger.error(f"errore chiusura engine: {e}")
+    
+    
+    async def insert_data_point(self, data_point: OPCUADataPoint) -> None:
+        """
+        salvataggio singolo data point nel database.
+        
+        args:
+            data_point -> dati da salvare
+        """
+        if not self.session_maker:
+            raise RuntimeError("storage non inizializzato, chiama initialize() prima")
+        
+        async with self.session_maker() as session:
+            record = DataPointRecord(
+                lamport_clock=data_point.lamport_clock,
+                tag=data_point.tag,
+                node_id=data_point.node_id,
+                value=float(data_point.value),
+                timestamp=data_point.timestamp,
+                quality=data_point.quality.value,
+                source_server=data_point.source_server
+            )
+            
+            session.add(record)
+            await session.commit()
+    
+    
+    async def insert_batch(self, data_points: list[OPCUADataPoint]) -> int:
+        """
+        funzione per salvataggo data point mutilpli in batch per performance migliori.
+        ignora duplicati (stesso lamport_clock) senza errore
+        
+        args:
+            data_points: lista di punti dati da salvare
+        
+        returns:
+            numero di record effettivamente inseriti
+        """
+        if not self.session_maker:
+            raise RuntimeError("storage non inizializzato")
+        
+        # se non è stata passata nemmeno un elemtno
+        if not data_points:
+            return 0
+        
+        async with self.session_maker() as session:
+            records = [
+                DataPointRecord(
+                    lamport_clock=dp.lamport_clock,
+                    tag=dp.tag,
+                    node_id=dp.node_id,
+                    value=float(dp.value),
+                    timestamp=dp.timestamp,
+                    quality=dp.quality.value,
+                    source_server=dp.source_server
+                )
+                for dp in data_points
+            ]
+            
+            # insert
+            inserted = 0
+            for record in records:
+                try:
+                    session.add(record)
+                    await session.flush()
+                    inserted += 1
+                except Exception:
+                    # duplicato o altro errore, skippa
+                    await session.rollback()
+                    continue
+            
+            await session.commit()
+            logger.debug(f"inseriti {inserted}/{len(data_points)} record in batch")
+            return inserted
+    
+    
+    async def get_latest_by_tag(self, tag: str) -> OPCUADataPoint | None:
+        """
+        ottenere l'ultimo valore di un tag specifico
+        
+        args:
+            tag: nome del tag da cercare        
+        """
+        if not self.session_maker:
+            raise RuntimeError("storage non inizializzato")
+        
+        async with self.session_maker() as session:
+            stmt = (
+                select(DataPointRecord)
+                .where(DataPointRecord.tag == tag)
+                .order_by(DataPointRecord.lamport_clock.desc())
+                .limit(1)
+            )
+            
+            result = await session.execute(stmt)
+            record = result.scalar_one_or_none()
+            
+            if record:
+                return self._record_to_model(record)
+            return None
+    
+    
+    async def get_history_by_tag(
+        self,
+        tag: str,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+        limit: int = 1000
+    ) -> list[OPCUADataPoint]:
+        """
+        get dello storico valori di un tag in un range temporale
+        
+        args:
+            tag: nome del tag
+            start_time: timestamp iniziale (None = dall'inizio)
+            end_time: timestamp finale (None = fino ad ora)
+            limit: massimo numero di record da restituire
+        
+        i dati restituiti sono ordinati secondo lamport clock
+        """
+        if not self.session_maker:
+            raise RuntimeError("storage non inizializzato")
+        
+        async with self.session_maker() as session:
+            stmt = select(DataPointRecord).where(DataPointRecord.tag == tag)
+            
+            # filtri opzionali
+            if start_time:
+                stmt = stmt.where(DataPointRecord.timestamp >= start_time)
+            if end_time:
+                stmt = stmt.where(DataPointRecord.timestamp <= end_time)
+            
+            stmt = stmt.order_by(DataPointRecord.lamport_clock.asc()).limit(limit)
+            
+            result = await session.execute(stmt)
+            records = result.scalars().all()
+            
+            return [self._record_to_model(r) for r in records]
+    
+    
+    async def get_by_lamport_range(
+        self,
+        min_lc: int,
+        max_lc: int
+    ) -> list[OPCUADataPoint]:
+        """
+        ottenre tutti i data point in un range di lamport clock, è utile per anti-entrpy       
+        args:
+            min_lc: lamport clock minimo
+            max_lc: lamport clock massimo
+
+            min_lc e max_lc sono entrambi inclusi
+        
+
+        """
+        if not self.session_maker:
+            raise RuntimeError("storage non inizializzato")
+        
+        async with self.session_maker() as session:
+            stmt = (
+                select(DataPointRecord)
+                .where(
+                    and_(
+                        DataPointRecord.lamport_clock >= min_lc,
+                        DataPointRecord.lamport_clock <= max_lc
+                    )
+                )
+                .order_by(DataPointRecord.lamport_clock.asc())
+            )
+            
+            result = await session.execute(stmt)
+            records = result.scalars().all()
+            
+            return [self._record_to_model(r) for r in records]
+    
+    
+    async def get_max_lamport_clock(self) -> int:
+        """
+        ottenere il massimo lamport clock presente nel database
+        ritorna il massimo LC o 0 se database vuoto
+        """
+        if not self.session_maker:
+            raise RuntimeError("storage non inizializzato")
+        
+        async with self.session_maker() as session:
+            stmt = select(func.max(DataPointRecord.lamport_clock))
+            result = await session.execute(stmt)
+            max_lc = result.scalar_one_or_none()
+            
+            return max_lc if max_lc is not None else 0
+    
+    
+    async def get_min_lamport_clock(self) -> int:
+        """
+        ottenere il minimo lamport clock presente nel database.
+        """
+        if not self.session_maker:
+            raise RuntimeError("storage non inizializzato")
+        
+        async with self.session_maker() as session:
+            stmt = select(func.min(DataPointRecord.lamport_clock))
+            result = await session.execute(stmt)
+            min_lc = result.scalar_one_or_none()
+            
+            return min_lc if min_lc is not None else 0
+    
+    
+    async def count_records(self) -> int:
+        """
+        conta il numero totale di record nel database.
+        
+        returns:
+            numero di data point salvati
+        """
+        if not self.session_maker:
+            raise RuntimeError("storage non inizializzato")
+        
+        async with self.session_maker() as session:
+            stmt = select(func.count()).select_from(DataPointRecord)
+            result = await session.execute(stmt)
+            count = result.scalar_one()
+            
+            return count
+    
+    
+    async def get_all_tags(self) -> list[str]:
+        """
+        ottenere la lista dei nomi di tutti i tag
+        
+        """
+        if not self.session_maker:
+            raise RuntimeError("storage non inizializzato")
+        
+        async with self.session_maker() as session:
+            stmt = select(DataPointRecord.tag).distinct()
+            result = await session.execute(stmt)
+            tags = result.scalars().all()
+            
+            return list(tags)
+    
+    
+    def _record_to_model(self, record: DataPointRecord) -> OPCUADataPoint:
+        """
+        utile per conversione
+        """
+        return OPCUADataPoint(
+            tag=record.tag,
+            node_id=record.node_id,
+            value=record.value,
+            timestamp=record.timestamp,
+            quality=QualityStatus(record.quality),
+            source_server=record.source_server,
+            lamport_clock=record.lamport_clock
+        )
