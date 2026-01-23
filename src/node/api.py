@@ -1,13 +1,10 @@
-"""
-api REST del nodo HUB usando FastAPI.
-espone endpoint pubblici per query dati e interni per gossip/anti-entropy.
-"""
-
 from datetime import datetime
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Depends, Query
-from fastapi.responses import JSONResponse
+from fastapi.security import OAuth2PasswordRequestForm
+
+from src.common.auth import create_access_token
 
 from src.common.config import get_settings
 from src.common.models import (
@@ -77,17 +74,22 @@ class HubAPI:
     def _register_routes(self) -> None:
         """registra tutti gli endpoint dell'API"""
         
-        # endpoint pubblici (con auth token)
+        self.app.post("/api/v1/auth/token")(self.login)
+
+        
         self.app.get("/api/v1/health")(self.health_check)
-        self.app.get("/api/v1/tags")(self.list_tags)
-        self.app.get("/api/v1/tags/{tag}/latest")(self.get_tag_latest)
-        self.app.get("/api/v1/tags/{tag}/history")(self.get_tag_history)
+        self.app.get("/api/v1/servers")(self.list_servers_name)
+        self.app.get("/api/v1/tags")(self.list_all_tags)
+        self.app.get("/api/v1/servers/{server_name}/tags")(self.list_tags)
+        self.app.get("/api/v1/servers/{server_name}/tags/{tag}/latest")(self.get_tag_latest)
+        self.app.get("/api/v1/servers/{server_name}/tags/{tag}/history")(self.get_tag_history)
         self.app.get("/api/v1/status")(self.get_node_status)
         
-        # endpoint interni (senza auth dato che sono per comunicazione tra nodi)
-        self.app.post("/internal/gossip/ping")(self.handle_gossip_ping)
-        self.app.post("/internal/anti-entropy/sync")(self.handle_anti_entropy_sync)
-        self.app.get("/internal/status")(self.internal_status)
+
+        # da docs l'utente non li deve vedere
+        self.app.post("/internal/gossip/ping", include_in_schema=False)(self.handle_gossip_ping)
+        self.app.post("/internal/anti-entropy/sync", include_in_schema=False)(self.handle_anti_entropy_sync)
+        self.app.get("/internal/status", include_in_schema=False)(self.internal_status)
     
     
     async def health_check(self) -> HealthCheckResponse:
@@ -99,7 +101,7 @@ class HubAPI:
 
         uptime = (utc_now() - self.start_time).total_seconds()
         current_lc = await self.lamport_clock.get_time()
-        records_count = await self.storage.count_records()
+        records_count = await self.storage.count_total_records()
         
         ingestor_status = self.ingestor.get_status()
         gossip_status = self.gossip.get_peer_status()
@@ -114,23 +116,69 @@ class HubAPI:
             storage_records_count=records_count
         )
     
+
+    async def login(self, form_data: OAuth2PasswordRequestForm = Depends()) -> dict[str, Any]:
+        """
+        endpoint per generare token JWT via username/password
+        
+        per ora accetta qualsiasi username/password (dev mode)
+        in produzione qui andrà la verifica delle credenziali
+        """
+        
+        # TODO: in produzione verificare username/password contro un database e per ora si accetta qualsiasi credenziale
+        
+        access_token = create_access_token(
+            client_id=form_data.username,
+            scopes=["read", "write"]
+        )
+        
+        return {
+            "access_token": access_token,
+            "token_type": "bearer"
+        }
+        
     
+    def list_servers_name(self, token: APITokenPayload = Depends(verify_token)) -> list[str]:
+        """get di tutti i server opcua a cui il nodo fa polling"""
+
+        return self.ingestor.get_opcua_server_names()
+
+
     async def list_tags(
         self,
+        server_name: str,
         token: APITokenPayload = Depends(verify_token)
-    ) -> dict[str, Any]:
+    ) -> list[str]:
         """
-        elenca tutti i tag disponibili nel sistema
+        elenca tutti i tag disponibili per uno specifico server
         """
         try:
-            tags = await self.storage.get_all_tags()
+            if not await self.storage.srv_exists(server_name=server_name):
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"server '{server_name}' non trovato"
+                )
             
-            return {
-                "tags": tags,
-                "count": len(tags),
-                "node_id": self.node_id
-            }
-            
+            all_tags = await self.storage.get_all_tags_from_srv(server_name=server_name)
+            return all_tags
+        
+        except Exception as e:
+            logger.error(f"errore listing tags: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+        
+    
+    async def list_all_tags(
+        self,
+        token: APITokenPayload = Depends(verify_token)
+    ) -> list[dict[str, str]]:
+        """
+        elenca tutti i tag disponibili per tutti i server
+        """
+        try:
+        
+            all_tags = await self.storage.get_all_tags()
+            return all_tags
+        
         except Exception as e:
             logger.error(f"errore listing tags: {e}")
             raise HTTPException(status_code=500, detail=str(e))
@@ -138,22 +186,29 @@ class HubAPI:
     
     async def get_tag_latest(
         self,
+        server_name: str,
         tag: str,
         token: APITokenPayload = Depends(verify_token)
     ) -> dict[str, Any]:
         """
-        ottiene l'ultimo valore di un tag specifico
+        ottiene l'ultimo valore di un tag specifico per un dato server
         
         args:
             tag: nome del tag da cercare
         """
         try:
-            data_point = await self.storage.get_latest_by_tag(tag)
+            if not await self.storage.srv_exists(server_name=server_name):
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"server '{server_name}' non trovato"
+                )
+
+            data_point: OPCUADataPoint = await self.storage.get_latest_tag(tag=tag, server_name=server_name)
             
             if not data_point:
                 raise HTTPException(
                     status_code=404,
-                    detail=f"tag '{tag}' non trovato"
+                    detail=f"tag '{tag}' non trovato per il server '{server_name}'"
                 )
             
             return {
@@ -163,7 +218,8 @@ class HubAPI:
                 "quality": data_point.quality.value,
                 "lamport_clock": data_point.lamport_clock,
                 "source_server": data_point.source_server,
-                "node_id": self.node_id
+                "node_id": self.node_id,
+                "server_name": data_point.server_name
             }
             
         except HTTPException:
@@ -176,6 +232,7 @@ class HubAPI:
     
     async def get_tag_history(
         self,
+        server_name: str,
         tag: str,
         start: datetime | None = Query(None, description="timestamp iniziale"),
         end: datetime | None = Query(None, description="timestamp finale"),
@@ -186,6 +243,7 @@ class HubAPI:
         ottiene lo storico di un tag in un range temporale
         
         args:
+            server_name: server sorgente,
             tag: nome del tag
             start: timestamp iniziale
             end: timestamp finale
@@ -194,16 +252,23 @@ class HubAPI:
         start timestamp e end sono opzionali
         """
         try:
+            if not await self.storage.srv_exists(server_name=server_name):
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"server '{server_name}' non trovato"
+                )
+            
             # verifica che il tag esista
-            all_tags = await self.storage.get_all_tags()
+            all_tags = await self.storage.get_all_tags(server_name=server_name)
             if tag not in all_tags:
                 raise HTTPException(
                     status_code=404,
-                    detail=f"tag '{tag}' non trovato"
+                    detail=f"tag '{tag}' non trovato per il server '{server_name}'"
                 )
             
-            history = await self.storage.get_history_by_tag(
+            history = await self.storage.get_tag_history(
                 tag=tag,
+                server_name=server_name,
                 start_time=start,
                 end_time=end,
                 limit=limit
@@ -247,7 +312,7 @@ class HubAPI:
             gossip_status = self.gossip.get_peer_status()
             anti_entropy_stats = self.anti_entropy.get_stats()
             
-            storage_count = await self.storage.count_records()
+            storage_count = await self.storage.count_total_records()
             storage_max_lc = await self.storage.get_max_lamport_clock()
             storage_min_lc = await self.storage.get_min_lamport_clock()
             

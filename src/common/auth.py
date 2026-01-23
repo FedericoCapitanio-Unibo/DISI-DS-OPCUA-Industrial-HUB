@@ -4,16 +4,19 @@ gestione autenticazione JWT per le API
 
 from datetime import datetime, timedelta, UTC
 from jose import JWTError, jwt
-from fastapi import HTTPException, Security
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi import HTTPException, Security, Depends
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer, OAuth2PasswordBearer, OAuth2PasswordRequestForm
 
 from src.common.config import get_settings
 from src.common.models import APITokenPayload
 from src.common.utils import utc_now
 
 
-# security scheme della lib fastapi
-security = HTTPBearer()
+# scheme per l'autneticazione
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token")
+
+# mantenuto anche HTTPBearer per compatibilità con client esterni, test ecc...
+security = HTTPBearer(auto_error=False)
 
 
 def create_access_token(
@@ -23,17 +26,7 @@ def create_access_token(
 ) -> str:
     """
     creazione di un JWT token di accesso
-    
-    args:
-        client_id: identificativo dell'id del client
-        scopes: lista di permessi da includere nel token
-        expires_delta: durata del token, se è None usa default da config
-    
-    returns:
-        token JWT codificato come stringa
-
     """
-
     settings = get_settings()
     
     if expires_delta is None:
@@ -61,16 +54,6 @@ def create_access_token(
 def decode_token(token: str) -> APITokenPayload:
     """
     decodifica e valida di un JWT token
-    
-    args:
-        token: token JWT da decodificare
-    
-    returns:
-        payload del token validato
-
-    
-    raisa eccezione se il token non è valido
-
     """
     settings = get_settings()
     
@@ -81,7 +64,6 @@ def decode_token(token: str) -> APITokenPayload:
             algorithms=[settings.jwt_algorithm]
         )
         
-        # conversione datetime da timestamp unix
         exp_timestamp = payload.get("exp")
         iat_timestamp = payload.get("iat")
         
@@ -102,22 +84,10 @@ def decode_token(token: str) -> APITokenPayload:
         )
 
 
-def verify_token(
-    credentials: HTTPAuthorizationCredentials = Security(security)
-
-) -> APITokenPayload:
+def verify_token(token: str = Depends(oauth2_scheme)) -> APITokenPayload:
     """
     dependency che verifica il token JWT nelle api
-    
-    args:
-        credentials: credenziali HTTP Bearer estratte dall'header Authorization
-    
-    returns:
-        payload del token validato
-    
-    propaga eccezione 401 se manca il token, se è invalido o se è scaduto
     """
-    token = credentials.credentials
     token_data = decode_token(token)
     
     # verifica scadenza
@@ -134,17 +104,10 @@ def verify_token(
 def verify_token_with_scopes(required_scopes: list[str]):
     """
     dependency che verifica il token e i suoi scope
-    
-    args:
-        required_scopes: lista di scope richiesti per accedere alla risorsa
-
     """
-    def dependency(
-        credentials: HTTPAuthorizationCredentials = Security(security)
-    ) -> APITokenPayload:
-        token_data = verify_token(credentials)
+    def dependency(token: str = Depends(oauth2_scheme)) -> APITokenPayload:
+        token_data = verify_token(token)
         
-        #verifica che tutti gli scope richiesti siano presenti
         token_scopes = set(token_data.scopes)
         required_scopes_set = set(required_scopes)
         
@@ -166,13 +129,6 @@ def generate_test_token(
 ) -> str:
     """
     genera un token di test con lunga durata per dev
-    
-    args:
-        client_id: identificativo dell'utente
-        scopes: scope da includere
-    
-    
-    si ottiene un token JWT valido per 24 oree
     """
     return create_access_token(
         client_id=client_id,

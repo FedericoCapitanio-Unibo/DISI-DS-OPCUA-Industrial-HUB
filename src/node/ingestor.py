@@ -136,10 +136,10 @@ class OPCUAConnection:
                 
                 await self.client.disconnect()
                 self._connected = False
-                self.logger.info(f"disconnesso da {self.server_name}")
+                self.logger.info(f"disconnesso")
                 
             except Exception as e:
-                self.logger.error(f"errore disconnessione da {self.server_name}: {e}")
+                self.logger.error(f"errore durante la disconnessione: {e}")
     
 
     async def _ping(self):
@@ -367,6 +367,7 @@ class OPCUAConnection:
                             timestamp=timestamp,
                             quality=quality,
                             source_server=self.endpoint,
+                            server_name=self.server_name,
                             lamport_clock=lc
                         )
                         data_points.append(dp)
@@ -381,7 +382,7 @@ class OPCUAConnection:
                             value=None,
                             timestamp=batch_timestamp,
                             quality=QualityStatus.BAD,
-                            source_server=self.endpoint,
+                            source_server=self.server_name,
                             lamport_clock=lc
                         )
                         data_points.append(dp)
@@ -737,7 +738,7 @@ class OPCUAIngestor:
             )
 
         self._scheduler.start()
-    
+
     
     async def stop(self) -> None:
 
@@ -772,3 +773,12 @@ class OPCUAIngestor:
                 for c in self.connections
             ]
         }
+    
+
+    def get_opcua_server_names(self) -> list[str]:
+        """get dei nomi degli ocpua server gestiti dall'ingestor"""
+
+        return [
+            connection.server_name
+            for connection in self.connections
+        ]

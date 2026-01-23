@@ -50,6 +50,8 @@ class DataPointRecord(Base):
         default=QualityStatus.GOOD.value
     )
     source_server: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    server_name: Mapped[str] = mapped_column(String(255), nullable=False)
     
     #indici composti per query comuni
     __table_args__ = (
@@ -143,7 +145,8 @@ class StorageManager:
                 value=float(data_point.value),
                 timestamp=data_point.timestamp,
                 quality=data_point.quality.value,
-                source_server=data_point.source_server
+                source_server=data_point.source_server,
+                server_name=data_point.server_name
             )
             
             session.add(record)
@@ -177,7 +180,8 @@ class StorageManager:
                     value=float(dp.value),
                     timestamp=dp.timestamp,
                     quality=dp.quality.value,
-                    source_server=dp.source_server
+                    source_server=dp.source_server,
+                    server_name=dp.server_name
                 )
                 for dp in data_points
             ]
@@ -198,8 +202,34 @@ class StorageManager:
             logger.debug(f"inseriti {inserted}/{len(data_points)} record in batch")
             return inserted
     
+
+    async def srv_exists(self, server_name: str) -> bool:
+
+        if not self.session_maker:
+            raise RuntimeError("storage non inizializzato")
+        
+        async with self.session_maker() as session:
+            query = select(func.count()).select_from(DataPointRecord).where(DataPointRecord.server_name == server_name)
+            result = await session.execute(query)
+            count = result.scalar_one()
+            
+            return count > 0
+
+
+    async def list_all_servers(self) -> list[str]:
+
+        if not self.session_maker:
+            raise RuntimeError("storage non inizializzato")
+        
+        async with self.session_maker() as session:
+            query = select(DataPointRecord).distinct()
+            result = await session.execute(query)
+            count = result.scalars().all()
+            
+            return count > 0
+
     
-    async def get_latest_by_tag(self, tag: str) -> OPCUADataPoint | None:
+    async def get_latest_tag(self, server_name: str, tag: str) -> OPCUADataPoint | None:
         """
         ottenere l'ultimo valore di un tag specifico
         
@@ -210,14 +240,20 @@ class StorageManager:
             raise RuntimeError("storage non inizializzato")
         
         async with self.session_maker() as session:
-            stmt = (
+            query = (
                 select(DataPointRecord)
-                .where(DataPointRecord.tag == tag)
+                # .where(DataPointRecord.tag == tag)
+                .where(
+                    and_(
+                        DataPointRecord.tag == tag,
+                        DataPointRecord.server_name == server_name
+                    )
+                )
                 .order_by(DataPointRecord.lamport_clock.desc())
                 .limit(1)
             )
             
-            result = await session.execute(stmt)
+            result = await session.execute(query)
             record = result.scalar_one_or_none()
             
             if record:
@@ -225,8 +261,9 @@ class StorageManager:
             return None
     
     
-    async def get_history_by_tag(
+    async def get_tag_history(
         self,
+        server_name: str,
         tag: str,
         start_time: datetime | None = None,
         end_time: datetime | None = None,
@@ -247,17 +284,17 @@ class StorageManager:
             raise RuntimeError("storage non inizializzato")
         
         async with self.session_maker() as session:
-            stmt = select(DataPointRecord).where(DataPointRecord.tag == tag)
+            query = select(DataPointRecord).where(DataPointRecord.server_name == server_name, DataPointRecord.tag == tag)
             
             # filtri opzionali
             if start_time:
-                stmt = stmt.where(DataPointRecord.timestamp >= start_time)
+                query = query.where(DataPointRecord.timestamp >= start_time)
             if end_time:
-                stmt = stmt.where(DataPointRecord.timestamp <= end_time)
+                query = query.where(DataPointRecord.timestamp <= end_time)
             
-            stmt = stmt.order_by(DataPointRecord.lamport_clock.asc()).limit(limit)
+            query = query.order_by(DataPointRecord.lamport_clock.asc()).limit(limit)
             
-            result = await session.execute(stmt)
+            result = await session.execute(query)
             records = result.scalars().all()
             
             return [self._record_to_model(r) for r in records]
@@ -282,7 +319,7 @@ class StorageManager:
             raise RuntimeError("storage non inizializzato")
         
         async with self.session_maker() as session:
-            stmt = (
+            query = (
                 select(DataPointRecord)
                 .where(
                     and_(
@@ -293,7 +330,7 @@ class StorageManager:
                 .order_by(DataPointRecord.lamport_clock.asc())
             )
             
-            result = await session.execute(stmt)
+            result = await session.execute(query)
             records = result.scalars().all()
             
             return [self._record_to_model(r) for r in records]
@@ -308,8 +345,8 @@ class StorageManager:
             raise RuntimeError("storage non inizializzato")
         
         async with self.session_maker() as session:
-            stmt = select(func.max(DataPointRecord.lamport_clock))
-            result = await session.execute(stmt)
+            query = select(func.max(DataPointRecord.lamport_clock))
+            result = await session.execute(query)
             max_lc = result.scalar_one_or_none()
             
             return max_lc if max_lc is not None else 0
@@ -323,16 +360,16 @@ class StorageManager:
             raise RuntimeError("storage non inizializzato")
         
         async with self.session_maker() as session:
-            stmt = select(func.min(DataPointRecord.lamport_clock))
-            result = await session.execute(stmt)
+            query = select(func.min(DataPointRecord.lamport_clock))
+            result = await session.execute(query)
             min_lc = result.scalar_one_or_none()
             
             return min_lc if min_lc is not None else 0
     
     
-    async def count_records(self) -> int:
+    async def count_total_records(self) -> int:
         """
-        conta il numero totale di record nel database.
+        conta il numero totale di record nel database
         
         returns:
             numero di data point salvati
@@ -341,28 +378,73 @@ class StorageManager:
             raise RuntimeError("storage non inizializzato")
         
         async with self.session_maker() as session:
-            stmt = select(func.count()).select_from(DataPointRecord)
-            result = await session.execute(stmt)
+            query = select(func.count()).select_from(DataPointRecord)
+            result = await session.execute(query)
             count = result.scalar_one()
             
             return count
-    
-    
-    async def get_all_tags(self) -> list[str]:
-        """
-        ottenere la lista dei nomi di tutti i tag
         
+    
+    async def count_records(self, server_name: str) -> int:
+        """
+        conta il numero totale di record nel database per unsolo server
+        
+        returns:
+            numero di data point salvati
         """
         if not self.session_maker:
             raise RuntimeError("storage non inizializzato")
         
         async with self.session_maker() as session:
-            stmt = select(DataPointRecord.tag).distinct()
-            result = await session.execute(stmt)
-            tags = result.scalars().all()
+            query = select(func.count()).select_from(DataPointRecord).where(DataPointRecord.server_name == server_name)
+            result = await session.execute(query)
+            count = result.scalar_one()
             
-            return list(tags)
+            return count
     
+    
+    async def get_all_tags(self) -> list[dict[str, str]]:
+        """
+        ottiene la lista di tutti i tag
+        
+        returns:
+            lista di dict
+        """
+        if not self.session_maker:
+            raise RuntimeError("storage non inizializzato")
+        
+        async with self.session_maker() as session:
+            query = select(
+                DataPointRecord.server_name, 
+                DataPointRecord.tag
+            ).distinct()
+            result = await session.execute(query)
+            rows = result.all()# lista di tuple (source_server, tag)
+            
+            return [
+                {"server": server_name, "tag": tag}
+                for server_name, tag in rows
+            ]
+        
+
+    async def get_all_tags_from_srv(self, server_name: str) -> list[str]:
+        
+        if not self.session_maker:
+            raise RuntimeError("storage non inizializzato")
+
+        async with self.session_maker() as session:
+            query = (
+                select(
+                    DataPointRecord.tag
+                )
+                .where(DataPointRecord.server_name == server_name)
+                .distinct()
+            )
+
+            result = await session.execute(query)
+    
+            return list(result.scalars().all())
+
     
     def _record_to_model(self, record: DataPointRecord) -> OPCUADataPoint:
         """
@@ -375,5 +457,6 @@ class StorageManager:
             timestamp=record.timestamp,
             quality=QualityStatus(record.quality),
             source_server=record.source_server,
+            server_name=record.server_name,
             lamport_clock=record.lamport_clock
         )

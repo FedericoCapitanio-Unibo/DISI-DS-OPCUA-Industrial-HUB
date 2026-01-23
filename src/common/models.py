@@ -30,6 +30,7 @@ class OPCUADataPoint(BaseModel):
     timestamp: datetime = Field(default_factory=utc_now, description="timestamp UTC di acquisizione")
     quality: QualityStatus = Field(default=QualityStatus.GOOD, description="qualità del dato")
     source_server: str = Field(..., description="endpoint del server OPC UA sorgente")
+    server_name: str = Field(..., description="nome del server OPC UA sorgente")
     lamport_clock: int = Field(..., description="timestamp logico di lamport per ordinamento causale")
 
 

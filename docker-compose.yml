@@ -42,9 +42,6 @@ services:
     networks:
       - opc-network
 
-  
-
-  
   node-a:
     build:
       context: .
@@ -57,9 +54,9 @@ services:
       - OPC_SERVERS=opc.tcp://opc-server-1:4840,opc.tcp://opc-server-2:4841,opc.tcp://opc-server-3:4842
       - GOSSIP_INTERVAL=5
       - ANTI_ENTROPY_INTERVAL=10
-      - JWT_SECRET="SatoshiNakamoto"
-    ports:
-      - "8000:8000"
+      - JWT_SECRET=SatoshiNakamoto
+    expose:
+      - "8000"
     volumes:
       - node-a-data:/app/data
     networks:
@@ -81,9 +78,9 @@ services:
       - OPC_SERVERS=opc.tcp://opc-server-1:4840,opc.tcp://opc-server-2:4841,opc.tcp://opc-server-3:4842
       - GOSSIP_INTERVAL=5
       - ANTI_ENTROPY_INTERVAL=10
-      - JWT_SECRET="SatoshiNakamoto"
-    ports:
-      - "8001:8001"
+      - JWT_SECRET=SatoshiNakamoto
+    expose:
+      - "8001"
     volumes:
       - node-b-data:/app/data
     networks:
@@ -105,9 +102,9 @@ services:
       - OPC_SERVERS=opc.tcp://opc-server-1:4840,opc.tcp://opc-server-2:4841,opc.tcp://opc-server-3:4842
       - GOSSIP_INTERVAL=5
       - ANTI_ENTROPY_INTERVAL=10
-      - JWT_SECRET="SatoshiNakamoto"
-    ports:
-      - "8002:8002"
+      - JWT_SECRET=SatoshiNakamoto
+    expose:
+      - "8002"
     volumes:
       - node-c-data:/app/data
     networks:
@@ -116,6 +113,24 @@ services:
       - opc-server-1
       - opc-server-2
       - opc-server-3
+
+
+  nginx:
+    image: nginx:alpine
+    container_name: hub-nginx
+    ports:
+      - "443:443"
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+    networks:
+      - opc-network
+    depends_on:
+      - node-a
+      - node-b
+      - node-c
+    restart: unless-stopped
 
 volumes:
   node-a-data:
