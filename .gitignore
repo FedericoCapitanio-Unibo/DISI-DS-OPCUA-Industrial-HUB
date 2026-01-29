@@ -3,6 +3,7 @@ docs/
 scripts/
 
 nginx/certs/server.key
+nginx/certs/server.crt
 
 
 # Byte-compiled / optimized / DLL files
