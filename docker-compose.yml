@@ -42,6 +42,38 @@ services:
     networks:
       - opc-network
 
+  opc-server-4:
+    build:
+      context: .
+      dockerfile: Dockerfile.simulator
+    container_name: opc-server-4
+    environment:
+      - SERVER_NAME=PlantLine4
+      - SERVER_PORT=4843
+      - ENDPOINT=opc.tcp://0.0.0.0:4843
+    ports:
+      - "4843:4843"
+    networks:
+      - opc-network
+    profiles:
+      - extra
+
+  opc-server-5:
+    build:
+      context: .
+      dockerfile: Dockerfile.simulator
+    container_name: opc-server-5
+    environment:
+      - SERVER_NAME=PlantLine5
+      - SERVER_PORT=4844
+      - ENDPOINT=opc.tcp://0.0.0.0:4844
+    ports:
+      - "4844:4844"
+    networks:
+      - opc-network
+    profiles:
+      - extra
+
   node-a:
     build:
       context: .
