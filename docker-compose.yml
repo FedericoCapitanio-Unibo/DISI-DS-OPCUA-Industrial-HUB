@@ -79,6 +79,8 @@ services:
       context: .
       dockerfile: Dockerfile.node
     container_name: hub-node-a
+    env_file:
+      - .env
     environment:
       - NODE_ID=node-a
       - NODE_PORT=8000
@@ -86,7 +88,6 @@ services:
       - OPC_SERVERS=opc.tcp://opc-server-1:4840,opc.tcp://opc-server-2:4841,opc.tcp://opc-server-3:4842
       - GOSSIP_INTERVAL=5
       - ANTI_ENTROPY_INTERVAL=10
-      - JWT_SECRET=SatoshiNakamoto
     expose:
       - "8000"
     volumes:
@@ -103,6 +104,8 @@ services:
       context: .
       dockerfile: Dockerfile.node
     container_name: hub-node-b
+    env_file:
+      - .env
     environment:
       - NODE_ID=node-b
       - NODE_PORT=8001
@@ -110,7 +113,6 @@ services:
       - OPC_SERVERS=opc.tcp://opc-server-1:4840,opc.tcp://opc-server-2:4841,opc.tcp://opc-server-3:4842
       - GOSSIP_INTERVAL=5
       - ANTI_ENTROPY_INTERVAL=10
-      - JWT_SECRET=SatoshiNakamoto
     expose:
       - "8001"
     volumes:
@@ -127,6 +129,8 @@ services:
       context: .
       dockerfile: Dockerfile.node
     container_name: hub-node-c
+    env_file:
+      - .env
     environment:
       - NODE_ID=node-c
       - NODE_PORT=8002
@@ -134,7 +138,6 @@ services:
       - OPC_SERVERS=opc.tcp://opc-server-1:4840,opc.tcp://opc-server-2:4841,opc.tcp://opc-server-3:4842
       - GOSSIP_INTERVAL=5
       - ANTI_ENTROPY_INTERVAL=10
-      - JWT_SECRET=SatoshiNakamoto
     expose:
       - "8002"
     volumes:
