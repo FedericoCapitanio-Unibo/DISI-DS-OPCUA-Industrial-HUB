@@ -12,7 +12,8 @@ from src.common.models import (
     HealthCheckResponse,
     APITokenPayload,
     OPCUADataPoint,
-    AntiEntropyRequest
+    AntiEntropyRequest,
+    AddOPCServerRequest
 )
 from src.common.auth import verify_token
 from src.common.logger import get_logger
@@ -22,6 +23,11 @@ from src.node.storage import StorageManager
 from src.node.gossip import GossipProtocol
 from src.node.ingestor import OPCUAIngestor
 from src.node.anti_entropy import AntiEntropyProtocol
+
+import aiohttp
+import asyncio
+from src.common.models import ServerConfig
+
 
 logger = get_logger(__name__)
 
@@ -78,7 +84,7 @@ class HubAPI:
 
         
         self.app.get("/api/v1/health")(self.health_check)
-        self.app.get("/api/v1/servers")(self.list_servers_name)
+        self.app.get("/api/v1/servers")(self.list_opcua_servers_name)
         self.app.get("/api/v1/tags")(self.list_all_tags)
         self.app.get("/api/v1/servers/{server_name}/tags")(self.list_tags)
         self.app.get("/api/v1/servers/{server_name}/tags/{tag}/latest")(self.get_tag_latest)
@@ -86,17 +92,21 @@ class HubAPI:
         self.app.get("/api/v1/status")(self.get_node_status)
         
 
-        # da docs l'utente non li deve vedere
+        # da docs l'utente non li deve vedere -> TODO aggiungere blocco con middleware o direttame
         self.app.post("/internal/gossip/ping", include_in_schema=False)(self.handle_gossip_ping)
         self.app.post("/internal/anti-entropy/sync", include_in_schema=False)(self.handle_anti_entropy_sync)
+        self.app.post("/internal/anti-entropy/sync-servers", include_in_schema=False)(self.handle_server_config_sync)
         self.app.get("/internal/status", include_in_schema=False)(self.internal_status)
-    
+
+        self.app.get("/api/v1/admin/opc-servers")(self.list_opc_servers)
+        self.app.post("/api/v1/admin/opc-servers")(self.add_opc_server)
+        
     
     async def health_check(self) -> HealthCheckResponse:
         """
         endpoint di health check per verificare stato del nodo
         
-        !!! è pubblico ma senza autenticazione per monitoring esterno
+        modificato per ascoltare solo in localhost direttamente nel docker compose
         """
 
         uptime = (utc_now() - self.start_time).total_seconds()
@@ -138,12 +148,6 @@ class HubAPI:
         }
         
     
-    def list_servers_name(self, token: APITokenPayload = Depends(verify_token)) -> list[str]:
-        """get di tutti i server opcua a cui il nodo fa polling"""
-
-        return self.ingestor.get_opcua_server_names()
-
-
     async def list_tags(
         self,
         server_name: str,
@@ -259,7 +263,7 @@ class HubAPI:
                 )
             
             # verifica che il tag esista
-            all_tags = await self.storage.get_all_tags(server_name=server_name)
+            all_tags = await self.storage.get_all_tags_from_srv(server_name=server_name)
             if tag not in all_tags:
                 raise HTTPException(
                     status_code=404,
@@ -301,8 +305,7 @@ class HubAPI:
         token: APITokenPayload = Depends(verify_token)
     ) -> dict[str, Any]:
         """
-        ottiene lo status completo del nodo (ingestor + gossip + storage).
-        richiede autenticazione JWT.
+        ottiene lo status completo del nodo
         """
         try:
             current_lc = await self.lamport_clock.get_time()
@@ -387,7 +390,98 @@ class HubAPI:
             logger.error(f"errore internal_status: {e}")
             raise HTTPException(status_code=500, detail=str(e))
     
+
+    def list_opcua_servers_name(self, token: APITokenPayload = Depends(verify_token)) -> list[str]:
+        """get di tutti i nomi dei server opcua a cui il nodo fa polling"""
+
+        return self.ingestor.get_opcua_servers_names()
     
+
+    async def list_opc_servers(
+        self,
+        token: APITokenPayload = Depends(verify_token)
+    ) -> dict[str, Any]:
+        """get di tutti i server opcua a cui il nodo fa polling"""
+
+        servers = self.ingestor.get_opcua_servers()
+        return {
+            "servers": servers,
+            "count": len(servers)
+        }
+
+
+    async def add_opc_server(
+    self,
+    request: AddOPCServerRequest,
+    token: APITokenPayload = Depends(verify_token)
+) -> dict[str, Any]:
+        """
+        aggiunge un nuovo server OPC UA a runtime e lo salva nel database
+        la replicazione avviene automaticamente tramite anti-entropy
+        """
+        
+        # incrementa lamport clock per questo evento
+        lc = await self.lamport_clock.tick()
+        
+        # crea configurazione server
+        server_config = ServerConfig(
+            server_name=request.server_name,
+            endpoint=request.endpoint,
+            lamport_clock=lc,
+            node_id=self.node_id
+        )
+        
+        #save nel database locale
+        insert = await self.storage.insert_server_config(server_config)
+        if not insert:
+            raise HTTPException(
+                status_code=500,
+                detail=f"errore dell'applicazione nell'aggiunta del server '{request.server_name}'"
+            )
+
+        # aggiungo all'ingestor
+        success = await self.ingestor.add_server(
+            endpoint=request.endpoint,
+            server_name=request.server_name
+        )
+        
+        if not success:
+            raise HTTPException(
+                status_code=400,
+                detail=f"impossibile aggiungere server '{request.server_name}'. Verifica che l'endpoint sia raggiungibile e che il nome non sia già in uso."
+            )
+        
+        logger.info(f"server 0{request.server_name}' aggiunto con LC={lc}, sarà replicato via anti-entropy")
+        
+        return {
+            "status": "success",
+            "message": f"server '{request.server_name}' aggiunto e sarà replicato automaticamente",
+            "endpoint": request.endpoint,
+            "server_name": request.server_name,
+            "lamport_clock": lc
+        }
+    
+
+    async def handle_server_config_sync(self, request: dict[str, Any]) -> dict[str, Any]:
+        """
+        gestione richiesta di sincronizzazione configurazioni server da altri nodi
+        
+        args:
+            request - richiesta di sync delle config server
+        """
+        try:
+            from src.common.models import ServerConfigSyncRequest
+            
+            sync_request = ServerConfigSyncRequest(**request)
+            response = await self.anti_entropy.handle_server_config_sync_request(sync_request)
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"errore gestione server config sync da {request.get('requester_id')}: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+
     def get_app(self) -> FastAPI:
         # funzione per farsi restituire tutti l'app fastapi. serve per poi runnnare l'applicazione con uvicorn
         return self.app

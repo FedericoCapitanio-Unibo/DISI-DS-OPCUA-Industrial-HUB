@@ -112,3 +112,49 @@ class HealthCheckResponse(BaseModel):
     connected_opc_servers: int = Field(..., description="numero di server opcua connessi")
     active_peers: int = Field(..., description="numero di peer attivi rilevati")
     storage_records_count: int = Field(..., description="numero di record nello storage locale")
+
+
+class AddOPCServerRequest(BaseModel):
+    """richiesta per aggiungere un server OPC UA dinamicamente"""
+    
+    #TODO valutare se lasciare solo uno dei due come identificativo
+    server_name: str = Field(
+        ...,
+        description="Nome identificativo del server (es. OPCServer4)",
+        examples=["OPCServer4"]
+    )
+    endpoint: str = Field(
+        ...,
+        description="URL del server OPC UA (es. opc.tcp://opc-server-4:4843)",
+        examples=["opc.tcp://opc-server-4:4843"]
+    )
+
+
+class ServerConfig(BaseModel):
+    """configurazione di un server OPC UA con timestamp logico"""
+    model_config = ConfigDict(frozen=False)
+    
+    server_name: str = Field(..., description="nome identificativo del server")
+    endpoint: str = Field(..., description="endpoint OPC UA (es. opc.tcp://opc-server-4:4843)")
+    lamport_clock: int = Field(..., description="timestamp logico di quando è stato aggiunto/rimosso")
+    node_id: str = Field(..., description="id del nodo che ha effettuato l'azione")
+
+
+class ServerConfigSyncRequest(BaseModel):
+    """richiesta di sincronizzazione configurazioni server"""
+    model_config = ConfigDict(frozen=False)
+    
+    requester_id: str = Field(..., description="id del nodo richiedente")
+    max_lamport_clock: int = Field(..., description="massimo lamport clock delle config possedute dal richiedente")
+
+
+class ServerConfigSyncResponse(BaseModel):
+    """
+    risposta con configurazioni server mancanti
+    """
+    
+    model_config = ConfigDict(frozen=False)
+    
+    responder_id: str = Field(..., description="id del nodo rispondente")
+    server_configs: list[ServerConfig] = Field(default_factory=list, description="configurazioni server mancanti")
+    current_max_lc: int = Field(..., description="massimo LC delle config possedute dal rispondente")

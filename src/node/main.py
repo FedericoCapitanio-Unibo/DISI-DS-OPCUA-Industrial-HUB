@@ -45,13 +45,53 @@ class HubNode:
         """inizializza tutti i componenti in sequenza"""
         
         logger.info("inizializzazione componenti...")
-        
-        #storage
+
+        #tiro su tutti i componenti
+
         self.storage = StorageManager()
         await self.storage.initialize()
         logger.info("storage pronto")
         
-        # ingestor opcua
+        # salvo i server iniziali da config nel database se non ci sono già
+        server_configs = await self.storage.get_all_server_configs()
+        logger.info(f"server già nel database: {len(server_configs)}")
+        
+        if not server_configs:
+            # nessun server nel database, salva quelli da env con LC FISSI
+            settings = get_settings()
+            initial_servers = settings.get_opc_servers_list()
+            
+            if initial_servers:
+                logger.info(f"inizializzazione database con {len(initial_servers)} server da configurazione")
+                
+                from src.common.models import ServerConfig
+                
+                #utilizzo di lamport fissi (1, 2, 3...) e node_id="system" per garantire consistenza
+                for i, endpoint in enumerate(initial_servers):
+                    server_name = f"OPCServer{i+1}"
+                    lc = i + 1
+                    
+                    config = ServerConfig(
+                        server_name=server_name,
+                        endpoint=endpoint,
+                        lamport_clock=lc,
+                        node_id="system"  # "system" invece del node_id (self.node_id) specifico
+                    )
+                    
+                    if await self.storage.insert_server_config(config):
+                        logger.info(f"salvato '{server_name}'({endpoint}) con LC={lc}")
+                    else:
+                        logger.error(f"'{server_name}'({endpoint}) non aggiunto correttamente")            
+
+
+                #aggiornp lamport clock per partire dopo i server iniziali
+                await self.lamport_clock.update(len(initial_servers))
+        else:
+            # se ci sono già dei serveraggiorno il lamport clock
+            max_lc = max(c.lamport_clock for c in server_configs)
+            await self.lamport_clock.update(max_lc)
+            logger.info(f"lamport clock aggiornato a {max_lc}")
+        
         self.ingestor = OPCUAIngestor(
             lamport_clock=self.lamport_clock,
             storage=self.storage
@@ -59,7 +99,6 @@ class HubNode:
         await self.ingestor.start()
         logger.info(f"ingestor avviato con {len(self.ingestor.connections)} canali OPCUA")
         
-        #gossip protocol
         self.gossip = GossipProtocol(
             node_id=self.node_id,
             node_port=self.port,
@@ -68,17 +107,16 @@ class HubNode:
         await self.gossip.start()
         logger.info("gossip avviato")
         
-        #anti-entropy protocol
         self.anti_entropy = AntiEntropyProtocol(
             node_id=self.node_id,
             lamport_clock=self.lamport_clock,
             storage=self.storage,
-            gossip=self.gossip
+            gossip=self.gossip,
+            ingestor=self.ingestor
         )
         await self.anti_entropy.start()
         logger.info("anti-entropy avviato")
         
-        # interfaccia con le API
         self.api = HubAPI(
             lamport_clock=self.lamport_clock,
             storage=self.storage,
@@ -88,7 +126,7 @@ class HubNode:
         )
         logger.info("API pronta")
         
-        logger.info(f"nodo {self.node_id} completamente operativo")
+        logger.info(f"nodo '{self.node_id}' completamente operativo")
     
     
     async def shutdown(self) -> None:
@@ -111,7 +149,7 @@ class HubNode:
             await self.storage.close()
             logger.info("storage chiuso")
         
-        logger.info(f"nodo {self.node_id} terminato")
+        logger.info(f"nodo '{self.node_id}' terminato")
     
     
     def get_app(self) -> FastAPI:
@@ -141,13 +179,14 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
 
-    # crea nodo temporaneo per ottenere l'app. il vero nodo sarà inizializzato nel lifespan
+    #creazione nodo temporaneo per ottenere l'app perhcè il vero nodo sarà inizializzato nel lifespan
+    
     node = HubNode()
     node.lamport_clock = LamportClock()
     node.storage = StorageManager()
     node.ingestor = OPCUAIngestor(node.lamport_clock, node.storage)
     node.gossip = GossipProtocol(node.node_id, node.port, node.lamport_clock)
-    node.anti_entropy = AntiEntropyProtocol(node.node_id, node.lamport_clock, node.storage, node.gossip)
+    node.anti_entropy = AntiEntropyProtocol(node.node_id, node.lamport_clock, node.storage, node.gossip, node.ingestor)
     node.api = HubAPI(node.lamport_clock, node.storage, node.gossip, node.ingestor, node.anti_entropy)
     
     app = node.get_app()
@@ -164,7 +203,7 @@ async def main() -> None:
     settings = get_settings()
     
     logger.info("=" * 60)
-    logger.info(f"avvio nodo HUB: {settings.node_id}")
+    logger.info(f"avvio nodo HUB: '{settings.node_id}'")
     logger.info(f"porta: {settings.node_port}")
     logger.info("=" * 60)
     

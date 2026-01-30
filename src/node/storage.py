@@ -15,6 +15,13 @@ from src.common.config import get_settings
 from src.common.models import OPCUADataPoint, QualityStatus
 from src.common.logger import get_logger
 
+from src.common.utils import  utc_now
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.common.models import ServerConfig
+
 logger = get_logger(__name__)
 
 
@@ -63,6 +70,33 @@ class DataPointRecord(Base):
         return f"<DataPoint(lc={self.lamport_clock}, tag='{self.tag}', value={self.value})>"
 
 
+class ServerConfigRecord(Base):
+    """
+    tabella per salvare le configurazioni dei server OPC UA
+    - ogni record rappresenta l'aggiunta di un server
+    - sincronizzato tra nodi tramite anti-entropy
+    """
+    __tablename__ = "server_configs"
+    
+    # chiave primaria composta: server_name + lamport_clock
+    server_name: Mapped[str] = mapped_column(String(255), primary_key=True)
+    lamport_clock: Mapped[int] = mapped_column(Integer, primary_key=True)
+    
+    # dati configurazione
+    endpoint: Mapped[str] = mapped_column(String(255), nullable=False)
+    node_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    # RIMUOVI: action: Mapped[str] = mapped_column(String(20), nullable=False)
+    
+    # indice per query
+    __table_args__ = (
+        Index("idx_server_lc", "server_name", "lamport_clock"),
+    )
+    
+    def __repr__(self) -> str:
+        return f"<ServerConfig(server='{self.server_name}', lc={self.lamport_clock})>"
+
+
 class StorageManager:
     """
     gestisce tutte le operazioni sul database SQLite
@@ -80,6 +114,10 @@ class StorageManager:
         self.db_path = db_path
         self.engine: AsyncEngine | None = None
         self.session_maker: async_sessionmaker[AsyncSession] | None = None
+
+
+        # lock per inserimento conifguraizoni dei server
+        self._insert_server_config_lock = asyncio.Lock()
         
         logger.info(f"storage manager inizializzato con db: {self.db_path}")
     
@@ -460,3 +498,128 @@ class StorageManager:
             server_name=record.server_name,
             lamport_clock=record.lamport_clock
         )
+    
+
+    async def insert_server_config(self, config: "ServerConfig") -> bool:
+        """salva configurazione server nel database"""
+        if not self.session_maker:
+            raise RuntimeError("storage non inizializzato")
+        
+        async with self._insert_server_config_lock, self.session_maker() as session:
+            record = ServerConfigRecord(
+                server_name=config.server_name,
+                endpoint=config.endpoint,
+                lamport_clock=config.lamport_clock,
+                node_id=config.node_id,
+                timestamp=utc_now()
+            )
+            
+            try:
+                session.add(record)
+                await session.commit()
+                logger.info(f"salvata config server {config.server_name} (LC={config.lamport_clock})")
+            except Exception as e:
+                await session.rollback()
+                if "UNIQUE constraint failed" in str(e):
+                    logger.debug(f"config server {config.server_name} (LC={config.lamport_clock}) già presente, skip")
+                else:
+                    logger.error(f"errore salvataggio config server: {e}")
+
+                return False
+            
+            return True
+
+
+    async def get_all_server_configs(self) -> list["ServerConfig"]:
+        """
+        ottiene tutte le configurazioni server dal database
+        ritorna solo l'ultima per ogni server (LC più alto)
+        """
+        if not self.session_maker:
+            raise RuntimeError("storage non inizializzato")
+        
+        from src.common.models import ServerConfig
+        
+        async with self.session_maker() as session:
+            query = (
+                select(ServerConfigRecord)
+                .order_by(ServerConfigRecord.lamport_clock.desc())
+            )
+            
+            result = await session.execute(query)
+            records = result.scalars().all()
+            
+            # si fa raggruppameto per server_name e prendo solo il più recente
+            latest_by_server: dict[str, ServerConfigRecord] = {}
+            for record in records:
+                if record.server_name not in latest_by_server:
+                    latest_by_server[record.server_name] = record
+            
+            #converto in ServerConfig (tutti sono server attivi)
+            configs = [
+                ServerConfig(
+                    server_name=record.server_name,
+                    endpoint=record.endpoint,
+                    lamport_clock=record.lamport_clock,
+                    node_id=record.node_id
+                )
+                for record in latest_by_server.values()
+            ]
+            
+            logger.debug(f"get_all_server_configs ritorna {len(configs)} server")
+            return configs
+
+
+    async def get_server_configs_by_lc_range(
+        self,
+        min_lc: int,
+        max_lc: int
+    ) -> list["ServerConfig"]:
+        """ottiene configurazioni server in un range di lamport clock"""
+        if not self.session_maker:
+            raise RuntimeError("storage non inizializzato")
+        
+        from src.common.models import ServerConfig
+        
+        async with self.session_maker() as session:
+            query = (
+                select(ServerConfigRecord)
+                .where(
+                    and_(
+                        ServerConfigRecord.lamport_clock >= min_lc,
+                        ServerConfigRecord.lamport_clock <= max_lc
+                    )
+                )
+                .order_by(ServerConfigRecord.lamport_clock.asc())
+            )
+            
+            result = await session.execute(query)
+            records = result.scalars().all()
+            
+            return [
+                ServerConfig(
+                    server_name=r.server_name,
+                    endpoint=r.endpoint,
+                    lamport_clock=r.lamport_clock,
+                    node_id=r.node_id
+                )
+                for r in records
+            ]
+
+
+    async def get_max_server_config_lc(self) -> int:
+        """
+        ottiene il massimo lamport clock delle configurazioni server
+        
+        returns:
+            massimo LC o 0 se nessuna config presente
+        """
+        if not self.session_maker:
+            raise RuntimeError("storage non inizializzato")
+        
+        async with self.session_maker() as session:
+            query = select(func.max(ServerConfigRecord.lamport_clock))
+            result = await session.execute(query)
+            max_lc = result.scalar_one_or_none()
+            
+            return max_lc if max_lc is not None else 0

@@ -16,7 +16,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
 from src.common.config import get_settings
-from src.common.models import OPCUADataPoint, QualityStatus
+from src.common.models import OPCUADataPoint, QualityStatus, ServerConfig
 from src.common.logger import get_logger
 from src.common.utils import utc_now
 from src.node.lamport import LamportClock
@@ -388,7 +388,7 @@ class OPCUAConnection:
                         data_points.append(dp)
                 
                 
-                self.logger.info(f"batch read completato: {len(data_points)} data points")
+                self.logger.debug(f"batch read completato: {len(data_points)} data points")
                 return data_points
 
             
@@ -440,192 +440,6 @@ class OPCUAConnection:
                 self.logger.error(f"errore durante polling: {e}")
         
 
-    # async def start_polling(self) -> None:
-    #     """avvia loop di polling periodico dei tag"""
-        
-    #     self.logger.info(f"avvio polling (intervallo = {self.polling_interval}s)")
-        
-    #     if self._connected:
-    #         try:
-    #             # leggi tutti i tag
-    #             data_points = await self.read_all_tags()
-                
-    #             # salva in storage
-    #             if data_points:
-    #                 await self.storage.insert_batch(data_points)
-    #                 self.logger.debug(f"salvati {len(data_points)} punti da {self.server_name}")
-                
-    #             # attendi prossimo ciclo
-    #             await asyncio.sleep(self.polling_interval)
-            
-
-    #         # se c'è eccezione si riprova dove 5 secondi
-    #         except Exception as e:
-    #             self.logger.error(f"errore durante polling {self.server_name}: {e}")
-    #             await asyncio.sleep(5)
-        
-    #     else:
-    #         self.logger.debug("client disconnesso. skip lettura...")
-    #         await asyncio.sleep(5)
-
-    
-    # async def connect(self, loop: bool = True):
-    #     """
-    #     funzione per connettersi al server opcua che riprova fino a che non riesc.
-    #     se non riesce c'è un sleep e un retry backoff incrementale
-
-    #     l'idea è quella che allo start ci si provi a connettere e se non si riesce si continua a provare. questa funzione poi
-    #     verrà chiamata per provare a riconnettersi quando una connessione viene persa
-
-    #     args:
-    #         - loop: se è false si esce dopo il primo ciclo. è quindi utile in fase di setup iniziale
-
-    #     """
-
-    #     # se c'è già un thread che sta tentando di connettersi, esco
-    #     if self._connect_lock.locked():
-    #         self.self.logger.info("c'è già un thread per la connessione")
-    #         return
-        
-
-    #     async with self._connect_lock:
-    #         attempt = 0
-
-    #         # provo fino a riuscire o fino a superare i tentativi massimi (se impostati)
-    #         while True:
-    #             try:
-    #                 # creo un client nuovo per evitare stati sporchi
-    #                 self.client = Client(self.endpoint, watchdog_intervall=60)
-
-    #                 # tento la connessione e verifico la sessione con un ping
-    #                 await self.client.connect()
-    #                 await self._ping()
-
-    #                 # marco la connessione come attiva e loggo
-    #                 self._connected = True
-    #                 self.logger.info(f"CONNECTED")
-
-    #                 #browse dei nodi disponibili
-    #                 await self._discover_nodes()
-
-    #                 return
-
-    #             except Exception as e:
-
-    #                 self._connected = False
-
-    #                 #se voglio che esca subito (esempio: evitare blocchi all'avvio)
-    #                 if not loop:
-    #                     raise
-
-    #                 attempt += 1
-    #                 self.logger.error(f"connection failed (attempt {attempt}): {e}")
-
-    #                 # se ho un limite di retry e l'ho raggiunto, rilancio l'errore
-    #                 if self.conn_retries and attempt >= self.conn_retries:
-    #                     raise
-
-    #                 # calcolo un jitter  e attendo
-    #                 jitter = random.uniform(-0.2, 0.2) * delay
-    #                 await asyncio.sleep(max(0.1, delay + jitter))
-
-    #                 # faccio backoff esponenziale con tetto massimo
-    #                 delay = min(delay * 2, 30.0)
-
-
-    # async def read_all_tags(self) -> list[OPCUADataPoint]:
-    #     """
-    #     - lettura di tutti i tag disponibili
-    #     - creazuibe data point con lamport clock
-    #     !ogni tag ottiene un LC univoco incrementale
-        
-    #     returns:
-    #         lista di data point letti
-        
-    #     """
-        
-    #     if not self.connected or not self.client:
-    #         self.logger.warning(f"tentativo lettura su {self.server_name} non connesso")
-    #         return []
-        
-    #     data_points: list[OPCUADataPoint] = []
-    #     timestamp = utc_now()
-        
-    #     for tag_name, node in self.tag_nodes.items():
-    #         try:
-    #             # incrementa lamport clock per ogni singolo tag
-    #             lc = await self.lamport_clock.tick()
-                
-    #             value = await node.read_value()
-    #             node_id = node.nodeid.to_string()
-                
-    #             # crea data point con LC univoco
-    #             dp = OPCUADataPoint(
-    #                 tag=tag_name,
-    #                 node_id=node_id,
-    #                 value=value,
-    #                 timestamp=timestamp,
-    #                 quality=QualityStatus.GOOD,
-    #                 source_server=self.endpoint,
-    #                 lamport_clock=lc
-    #             )
-                
-    #             data_points.append(dp)
-                
-    #         except Exception as e:
-    #             self.logger.error(f"errore lettura tag {tag_name} da {self.server_name}: {e}")
-        
-    #     if data_points:
-    #         self.logger.debug(
-    #             f"letti {len(data_points)} tag da {self.server_name} "
-    #             f"(LC {data_points[0].lamport_clock}-{data_points[-1].lamport_clock})"
-    #         )
-        
-    #     return data_points
-    
-    
-    # async def start_polling(self) -> None:
-    #     """avvia loop di polling periodico dei tag"""
-    #     self.logger.info(f"avvio polling su {self.server_name} (intervallo {self.polling_interval}s)")
-        
-    #     while self.connected:
-    #         try:
-    #             # leggi tutti i tag
-    #             data_points = await self.read_all_tags()
-                
-    #             # salva in storage
-    #             if data_points:
-    #                 await self.storage.insert_batch(data_points)
-    #                 self.logger.debug(f"salvati {len(data_points)} punti da {self.server_name}")
-                
-    #             # attendi prossimo ciclo
-    #             await asyncio.sleep(self.polling_interval)
-            
-
-    #         # se c'è eccezione si riprova dove 5 secondi
-    #         except Exception as e:
-    #             self.logger.error(f"errore durante polling {self.server_name}: {e}")
-    #             await asyncio.sleep(5)
-    
-    
-    # async def reconnect_loop(self) -> None:
-    #     """loop per riconnettersi automaticamente in caso di disconnessione"""
-
-    #     while True:
-    #         if not self.connected:
-    #             self.logger.info(f"tentativo riconnessione a {self.server_name}...")
-    #             success = await self.connect()
-                
-    #             if success:
-    #                 # riavvio del polling dopo riconnessione
-    #                 asyncio.create_task(self.start_polling())
-    #             else:
-
-    #                 await asyncio.sleep(10)
-            
-    #         await asyncio.sleep(30)
-
-
 class OPCUAIngestor:
 
     
@@ -643,101 +457,117 @@ class OPCUAIngestor:
         self.storage = storage
         
         #lettura  configurazione server OPC UA
-        settings = get_settings()
-        self.opc_servers = settings.get_opc_servers_list()
+        # settings = get_settings()
+        # self.opc_servers = settings.get_opc_servers_list()
+        # lista server OPC UA sarà popolata da database o config
+        self.opc_servers: list[str] = []
         
         #connessioni attive
         self.connections: list[OPCUAConnection] = []
         
-        logger.info(f"ingestor inizializzato con {len(self.opc_servers)} server OPC UA: {', '.join(self.opc_servers)}")
+        logger.info(f"ingestor inizializzato")
 
         self._scheduler = AsyncIOScheduler()
+
+
+        # lock per evitare race condition in caso di aggiunta di server 
+        self._add_server_lock = asyncio.Lock()
     
-    
-    # async def start(self) -> None:
-    #     """
-    #     avvio dell'ingestor, ovvero connessione e raccolta dati
-    #     """
-        
-    #     if not self.opc_servers:
-    #         logger.warning("nessun server OPC UA configurato, ingestor non avviato")
-    #         return
-        
-    #     # crea connessioni per ogni server
-    #     for i, endpoint in enumerate(self.opc_servers):
-    #         server_name = f"OPCServer{i+1}"
-            
-    #         connection = OPCUAConnection(
-    #             endpoint=endpoint,
-    #             server_name=server_name,
-    #             lamport_clock=self.lamport_clock,
-    #             storage=self.storage
-    #         )
-            
-    #         #tentativo di connettessione
-    #         success = await connection.connect()
-            
-    #         if success:
-    #             self.connections.append(connection)
-                
-    #             #avvia polling in background
-    #             asyncio.create_task(connection.start_polling())
-                
-    #             # avvia loop riconnessione automatica
-    #             asyncio.create_task(connection.reconnect_loop())
-    #         else:
-    #             logger.error(f"impossibile connettersi a {endpoint}, salterò questo server")
-        
-    #     logger.info(f"ingestor avviato con {len(self.connections)} connessioni attive")
 
 
     async def start(self) -> None:
         """
-        avvia l'ingestor: connette a tutti i server e inizia raccolta dati.
+        avvia l'ingestor: carica server da database o config e inizia raccolta dati
         """
         
-        if not self.opc_servers:
-            logger.warning("nessun server OPC UA configurato, ingestor non avviato")
-            return
+        # carica server da database (hanno priorità)
+        server_configs: list[ServerConfig] = await self.storage.get_all_server_configs()
         
-        # attesa che i server OPC UA siano pronti # TODO verificare se servono ancora
-        # logger.info("attendo 20 secondi per avvio server OPC UA...")
-        # await asyncio.sleep(20)
-
-
-        # crea connessioni per ogni server
-        for i, endpoint in enumerate(self.opc_servers):
+        if server_configs:
+            # usa server dal database con i loro nomi originali
+            # deduplica per endpoint
+            seen_endpoints = set()
+            unique_configs: list[ServerConfig] = []
+            for config in server_configs:
+                if config.endpoint not in seen_endpoints:
+                    seen_endpoints.add(config.endpoint)
+                    unique_configs.append(config)
             
-            server_name = f"OPCServer{i+1}"
-            
-            connection = OPCUAConnection(
-                endpoint=endpoint,
-                server_name=server_name,
-                lamport_clock=self.lamport_clock,
-                storage=self.storage
+            logger.info(
+                f"caricati {len(unique_configs)} server da database: "
+                f"{', '.join([c.server_name for c in unique_configs])}"
             )
-            self.connections.append(connection)
             
-            await connection.connect(loop=False)
+            # crea connessioni usando i nomi dal database
+            for config in unique_configs:
+                connection = OPCUAConnection(
+                    endpoint=config.endpoint,
+                    server_name=config.server_name,  # usa il nome dal database
+                    lamport_clock=self.lamport_clock,
+                    storage=self.storage
+                )
+                self.connections.append(connection)
+                self.opc_servers.append(config.endpoint)
+                
+                await connection.connect(loop=False)
 
-            # serve per far partire i job dopo n secondi la prima volta
-            #applicazione di un intervallo di millisecondi casuale in modo che i job delle diverse connessioni non partano in contemporanea
-            some_seconds_delay = utc_now() + timedelta(seconds=15) + timedelta(milliseconds=random.randrange(100, 500, 50))
+                # serve per far partire i job dopo n secondi la prima volta
+                # applicazione di un intervallo di millisecondi casuale in modo che i job delle diverse connessioni non partano in contemporanea
+                some_seconds_delay = utc_now() + timedelta(seconds=15) + timedelta(milliseconds=random.randrange(100, 500, 50))
 
-            #job schedulato ogni n secondi dati dall'intervallo di polling della connessione stessa
-            self._scheduler.add_job(
-                func=connection.start_polling,
-                trigger=IntervalTrigger(
-                    seconds=connection.polling_interval
-                ),
-                coalesce=True,
-                max_instances=1,
-                misfire_grace_time=5,
-                id=f"job_{connection.server_name}",
-                next_run_time=some_seconds_delay
-            )
+                # job schedulato ogni n secondi dati dall'intervallo di polling della connessione stessa
+                self._scheduler.add_job(
+                    func=connection.start_polling,
+                    trigger=IntervalTrigger(
+                        seconds=connection.polling_interval
+                    ),
+                    coalesce=True,
+                    max_instances=1,
+                    misfire_grace_time=5,
+                    id=f"job_{connection.server_name}",
+                    next_run_time=some_seconds_delay
+                )
+        
+        else:
+            # fallback a configurazione da env
+            settings = get_settings()
+            self.opc_servers = settings.get_opc_servers_list()
+            logger.info(f"caricati {len(self.opc_servers)} server da configurazione env")
+            
+            if not self.opc_servers:
+                logger.warning("nessun server OPC UA configurato, ingestor non avviato")
+                return
+            
+            # crea connessioni per ogni server con nomi generati
+            for i, endpoint in enumerate(self.opc_servers):
+                server_name = f"OPCServer{i+1}"
+                
+                connection = OPCUAConnection(
+                    endpoint=endpoint,
+                    server_name=server_name,
+                    lamport_clock=self.lamport_clock,
+                    storage=self.storage
+                )
+                self.connections.append(connection)
+                
+                await connection.connect(loop=False)
+
+                some_seconds_delay = utc_now() + timedelta(seconds=15) + timedelta(milliseconds=random.randrange(100, 500, 50))
+
+                self._scheduler.add_job(
+                    func=connection.start_polling,
+                    trigger=IntervalTrigger(
+                        seconds=connection.polling_interval
+                    ),
+                    coalesce=True,
+                    max_instances=1,
+                    misfire_grace_time=5,
+                    id=f"job_{connection.server_name}",
+                    next_run_time=some_seconds_delay
+                )
 
         self._scheduler.start()
+        logger.info(f"ingestor avviato con {len(self.connections)} connessioni")
 
     
     async def stop(self) -> None:
@@ -775,10 +605,94 @@ class OPCUAIngestor:
         }
     
 
-    def get_opcua_server_names(self) -> list[str]:
+    def get_opcua_servers_names(self) -> list[str]:
         """get dei nomi degli ocpua server gestiti dall'ingestor"""
 
         return [
             connection.server_name
             for connection in self.connections
+        ]
+    
+
+    async def add_server(self, endpoint: str, server_name: str) -> bool:
+        """
+        aggiunge un nuovo server OPC UA a runtime
+        
+        args:
+            endpoint: url del server, ad esempio opc.tcp://opc-server-4:4843
+            server_name: nome identificativo del server di aggiungere
+        
+        ritorna un bool che dice se effettivamente è stato aggiunto
+        """
+
+
+        # evitare race condition
+        async with self._add_server_lock:
+
+            # verifico che non esista già
+            for conn in self.connections:
+                # if conn.endpoint == endpoint:
+                #     logger.info(f"server con endpoint '{endpoint}' già presente, skip aggiunta")
+                #     return False
+                if conn.server_name == server_name:
+                    logger.info(f"server con nome '{server_name}' già presente, skip aggiunta")
+                    return False
+            
+            #verifico anche nella lista dell'istanza
+            # if endpoint in self.opc_servers:
+            #     logger.info(f"endpoint '{endpoint}' già nella lista opc_servers, skip aggiunta")
+            #     return False
+            
+            # creo la connessione nuova
+            connection = OPCUAConnection(
+                endpoint=endpoint,
+                server_name=server_name,
+                lamport_clock=self.lamport_clock,
+                storage=self.storage
+            )
+            
+            job_id = f"job_{connection.server_name}"
+
+            #check sul job dato che il nome lo prende da lì
+            if self._scheduler.get_job(job_id=job_id) is not None:
+                logger.warning(f"c'è già un job per '{server_name}'({job_id}), pertanto è già stato aggiunto")
+                return False
+
+            # # tenta connessione
+            # await connection.connect(loop=False)
+            
+            # aggiungo job per il polling allo scheduler
+            some_seconds_delay = utc_now() + timedelta(seconds=5) + timedelta(milliseconds=random.randrange(100, 500, 50))
+
+            self._scheduler.add_job(
+                func=connection.start_polling,
+                trigger=IntervalTrigger(seconds=connection.polling_interval),
+                coalesce=True,
+                max_instances=1,
+                misfire_grace_time=5,
+                id=job_id,
+                next_run_time=some_seconds_delay
+            )
+
+            # aggiungi alla lista
+            self.connections.append(connection)
+            self.opc_servers.append(endpoint)
+                
+            logger.info(f"server '{server_name}'({endpoint}) aggiunto dinamicamente")
+            return True
+
+
+    def get_opcua_servers(self) -> list[dict[str, Any]]:
+        """
+
+        get di tutti i server OPC UA configurati con dettagli
+        """
+        return [
+            {
+                "server_name": conn.server_name,
+                "endpoint": conn.endpoint,
+                "connected": conn.connected,
+                "tags_count": len(conn.tag_nodes)
+            }
+            for conn in self.connections
         ]
