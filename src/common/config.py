@@ -128,13 +128,13 @@ class Settings(BaseSettings):
 
     opc_subscription_interval: int = Field(
         default=1000,
-        le=1000,
+        ge=1000,
         description="intervallo subscription OPC UA in millisecondi"
     )
     
     opc_polling_interval: int = Field(
         default=5,
-        le=1,   #limite per prevenire richieste troppo frequenti verso i server
+        ge=1,   #limite per prevenire richieste troppo frequenti verso i server
         description="intervallo polling OPC UA in secondi se subscription non è disponibile"
     )
 
