@@ -65,6 +65,9 @@ class AntiEntropyProtocol:
         self.n__total_syncs = 0
         self.total_records_received = 0
 
+        # lock per update configurazioni server
+        self._server_config_lock = asyncio.Lock()
+
 
         logger.info(f"anti-entropy inizializzato per il nodo {node_id}")
     
