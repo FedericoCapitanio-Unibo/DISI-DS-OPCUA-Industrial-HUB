@@ -4,7 +4,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Depends, Query
 from fastapi.security import OAuth2PasswordRequestForm
 
-from src.common.auth import create_access_token
+from src.common.auth import create_access_token, verify_admin
 
 from src.common.config import get_settings
 from src.common.models import (
@@ -130,22 +130,42 @@ class HubAPI:
     async def login(self, form_data: OAuth2PasswordRequestForm = Depends()) -> dict[str, Any]:
         """
         endpoint per generare token JWT via username/password
-        
-        per ora accetta qualsiasi username/password (dev mode)
-        in produzione qui andrà la verifica delle credenziali
         """
+
+        settings = get_settings()
         
-        # TODO: in produzione verificare username/password contro un database e per ora si accetta qualsiasi credenziale
-        
-        access_token = create_access_token(
-            client_id=form_data.username,
-            scopes=["read", "write"]
+        #check se è l'utente admin
+        is_admin = (
+            form_data.username == settings.admin_user and
+            form_data.password == settings.admin_password.get_secret_value()
         )
         
-        return {
-            "access_token": access_token,
-            "token_type": "bearer"
-        }
+        if is_admin:
+            # token admin con tutti i permessi
+            access_token = create_access_token(
+                client_id=form_data.username,
+                role="admin",
+                scopes=["read", "write", "admin"]
+            )
+            
+            return {
+                "access_token": access_token,
+                "token_type": "bearer",
+                "role": "admin"
+            }
+        else:
+            #token user con permessi limitati
+            access_token = create_access_token(
+                client_id=form_data.username,
+                role="user",
+                scopes=["read"]
+            )
+            
+            return {
+                "access_token": access_token,
+                "token_type": "bearer",
+                "role": "user"
+            }
         
     
     async def list_tags(
@@ -399,7 +419,7 @@ class HubAPI:
 
     async def list_opc_servers(
         self,
-        token: APITokenPayload = Depends(verify_token)
+        token: APITokenPayload = Depends(verify_admin)
     ) -> dict[str, Any]:
         """get di tutti i server opcua a cui il nodo fa polling"""
 
@@ -413,7 +433,7 @@ class HubAPI:
     async def add_opc_server(
     self,
     request: AddOPCServerRequest,
-    token: APITokenPayload = Depends(verify_token)
+    token: APITokenPayload = Depends(verify_admin)
 ) -> dict[str, Any]:
         """
         aggiunge un nuovo server OPC UA a runtime e lo salva nel database

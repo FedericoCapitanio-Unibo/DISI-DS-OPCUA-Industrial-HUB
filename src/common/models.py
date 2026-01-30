@@ -98,6 +98,7 @@ class APITokenPayload(BaseModel):
     exp: datetime = Field(..., description="tempo di scandenza token")
     iat: datetime = Field(default_factory=utc_now, description="quando è stato rilasciato")
     scopes: list[str] = Field(default_factory=list, description="permessi e scope del token")
+    role: str = Field(default="user", description="ruolo utente: 'admin' o 'user'")
 
 
 class HealthCheckResponse(BaseModel):

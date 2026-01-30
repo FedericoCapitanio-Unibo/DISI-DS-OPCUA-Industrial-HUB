@@ -2,7 +2,7 @@
 
 from pathlib import Path
 from typing import Literal
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -72,6 +72,16 @@ class Settings(BaseSettings):
     )
     
     # sicurezza
+    admin_user: str = Field(
+        default="admin@example.com",
+        description="username per utente admin"
+    )
+
+    admin_password: SecretStr = Field(
+        default="sysadmin",
+        description="password per utente admin"
+    )
+    
     jwt_secret: str = Field(
         default="change-me",
         description="secret key per firma JWT token"
@@ -116,14 +126,15 @@ class Settings(BaseSettings):
     
     # OPC UA
 
-    # TODO mettere un controllo per numero troppo basso(forse overhead sui server)
     opc_subscription_interval: int = Field(
         default=1000,
+        le=1000,
         description="intervallo subscription OPC UA in millisecondi"
     )
     
     opc_polling_interval: int = Field(
         default=5,
+        le=1,   #limite per prevenire richieste troppo frequenti verso i server
         description="intervallo polling OPC UA in secondi se subscription non è disponibile"
     )
 
