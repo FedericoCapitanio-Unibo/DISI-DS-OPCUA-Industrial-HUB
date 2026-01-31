@@ -133,22 +133,36 @@ class HubNode:
 
         logger.info("shutdown nodo in corso...")
         
-        if self.ingestor:
-            await self.ingestor.stop()
-            logger.info("ingestor fermato")
-        
-        if self.gossip:
-            await self.gossip.stop()
-            logger.info("gossip fermato")
-        
-        if self.anti_entropy:
-            await self.anti_entropy.stop()
-            logger.info("anti-entropy fermato")
-        
-        if self.storage:
-            await self.storage.close()
-            logger.info("storage chiuso")
-        
+
+        try:
+            if self.ingestor:
+                await self.ingestor.stop()
+                logger.info("ingestor fermato")
+        except asyncio.CancelledError:
+            pass
+
+        try:
+            if self.gossip:
+                await self.gossip.stop()
+                logger.info("gossip fermato")
+        except asyncio.CancelledError:
+            pass
+
+        try:
+            if self.anti_entropy:
+                await self.anti_entropy.stop()
+                logger.info("anti-entropy fermato")
+        except asyncio.CancelledError:
+            pass
+
+        try:
+            if self.storage:
+                await self.storage.close()
+                logger.info("storage chiuso")
+        except asyncio.CancelledError:
+            pass
+
+
         logger.info(f"nodo '{self.node_id}' terminato")
     
     
