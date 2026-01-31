@@ -136,7 +136,7 @@ class HubAPI:
         
         #check se è l'utente admin
         is_admin = (
-            form_data.username == settings.admin_user and
+            form_data.username == settings.admin_username and
             form_data.password == settings.admin_password.get_secret_value()
         )
         

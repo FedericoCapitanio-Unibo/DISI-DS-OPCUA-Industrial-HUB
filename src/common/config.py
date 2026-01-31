@@ -72,7 +72,7 @@ class Settings(BaseSettings):
     )
     
     # sicurezza
-    admin_user: str = Field(
+    admin_username: str = Field(
         default="admin@example.com",
         description="username per utente admin"
     )
