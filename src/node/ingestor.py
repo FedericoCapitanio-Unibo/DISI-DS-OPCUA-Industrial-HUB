@@ -166,8 +166,10 @@ class OPCUAConnection:
             except Exception:
                 pass
 
-        
-        await self.connect()
+        try:
+            await self.connect()
+        except asyncio.CancelledError:
+            pass
 
 
     async def connect(self, loop: bool = True):
