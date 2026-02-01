@@ -1,4 +1,6 @@
 
+# PowerShell -ExecutionPolicy Bypass -File .\setup.ps1
+
 $ErrorActionPreference = "Stop"
 
 Write-Host ""
