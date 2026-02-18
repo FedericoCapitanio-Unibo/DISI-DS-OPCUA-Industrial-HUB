@@ -81,6 +81,11 @@ class Settings(BaseSettings):
         default="sysadmin",
         description="password per utente admin"
     )
+
+    users: str = Field(
+    default="",
+    description="lista utenti autorizzati (formato: email:password,email:password)"
+)
     
     jwt_secret: str = Field(
         default="change-me",
@@ -182,6 +187,35 @@ class Settings(BaseSettings):
         """ ottiene il path assoluto del database SQLite """
         self.storage_path.mkdir(parents=True, exist_ok=True)
         return self.storage_path / self.db_name
+    
+
+    def get_users_dict(self) -> dict[str, str]:
+        """
+        parse della stringa users in dizionario email -> password
+        Returns:
+            dizionario {email: password}
+        
+        esempio:
+            USERS="user1@example.com:Pass123!,user2@example.com:Pass456!"
+            → {"user1@example.com": "Pass123!", "user2@example.com": "Pass456!"}
+        """
+        if not self.users:
+            return {}
+        
+        users_dict = {}
+        for user_entry in self.users.split(","):
+            user_entry = user_entry.strip()
+            if ":" not in user_entry:
+                continue  # Malformato, skippa
+            
+            email, password = user_entry.split(":", 1)
+            email = email.strip()
+            password = password.strip()
+            
+            if email and password:
+                users_dict[email] = password
+        
+        return users_dict
 
 
 # istanza globale singleton delle settings

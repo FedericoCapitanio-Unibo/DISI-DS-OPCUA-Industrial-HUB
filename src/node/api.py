@@ -153,21 +153,31 @@ class HubAPI:
                 "token_type": "bearer",
                 "role": "admin"
             }
-        else:
-            #token user con permessi limitati
-            access_token = create_access_token(
-                client_id=form_data.username,
-                role="user",
-                scopes=["read"]
-            )
-            
-            return {
-                "access_token": access_token,
-                "token_type": "bearer",
-                "role": "user"
-            }
         
+        #token user con permessi limitati
+        users_dict = settings.get_users_dict()
     
+        if form_data.username in users_dict:
+            if users_dict[form_data.username] == form_data.password:
+                access_token = create_access_token(
+                    client_id=form_data.username,
+                    role="user",
+                    scopes=["read"]
+                )
+                
+                return {
+                    "access_token": access_token,
+                    "token_type": "bearer",
+                    "role": "user"
+                }
+        
+        # credenziali non valide
+        raise HTTPException(
+            status_code=401,
+            detail="Credenziali non valide"
+        )
+
+
     async def list_tags(
         self,
         server_name: str,

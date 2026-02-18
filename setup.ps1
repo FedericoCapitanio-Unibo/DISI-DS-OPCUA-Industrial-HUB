@@ -203,6 +203,113 @@ Write-Host "OK" -ForegroundColor Green
 Write-Host ""
 
 
+Write-Host "[4/4] Configurazione Utenti (opzionale)" -ForegroundColor Yellow
+Write-Host ""
+Write-Host "Vuoi aggiungere utenti con accesso limitato? (s/N)" -ForegroundColor Gray
+$addUsers = Read-Host
+
+$usersList = @()
+
+if ($addUsers -eq "s" -or $addUsers -eq "S") {
+    $addMore = $true
+    
+    while ($addMore) {
+        Write-Host ""
+        Write-Host "--- Nuovo utente ---" -ForegroundColor Cyan
+        
+        $userEmail = ""
+        $validUserEmail = $false
+        
+        while (-not $validUserEmail) {
+            $userEmail = Read-Host "Email utente"
+            $userEmail = $userEmail.Trim()
+            
+            if ([string]::IsNullOrWhiteSpace($userEmail)) {
+                Write-Host "Email non puo essere vuota!" -ForegroundColor Red
+                continue
+            }
+            
+            if (-not (Test-Email -Email $userEmail)) {
+                Write-Host "Email non valida!" -ForegroundColor Red
+                continue
+            }
+            
+            # check email già usata
+            if ($userEmail -eq $adminEmail) {
+                Write-Host "Email gia usata dall'admin!" -ForegroundColor Red
+                continue
+            }
+            
+            $emailExists = $usersList | Where-Object { $_.StartsWith("${userEmail}:") }
+            if ($emailExists) {
+                Write-Host "Email gia usata da un altro utente!" -ForegroundColor Red
+                continue
+            }
+            
+            $validUserEmail = $true
+            Write-Host "OK" -ForegroundColor Green
+        }
+        
+        $userPassword = ""
+        $validUserPassword = $false
+        
+        while (-not $validUserPassword) {
+            $secureUserPassword = Read-Host "Password utente" -AsSecureString
+            $userPassword = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
+                [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureUserPassword)
+            )
+            
+            $userPassword = $userPassword.Trim()
+            
+            if ([string]::IsNullOrWhiteSpace($userPassword)) {
+                Write-Host "Password non puo essere vuota!" -ForegroundColor Red
+                continue
+            }
+            
+            if (-not (Test-PasswordComplexity -Password $userPassword)) {
+                Write-Host "Password non soddisfa i requisiti!" -ForegroundColor Red
+                Write-Host "Requisiti: min 8 caratteri, maiuscola, minuscola, numero, carattere speciale" -ForegroundColor Gray
+                continue
+            }
+            
+            $secureUserPasswordConfirm = Read-Host "Conferma password" -AsSecureString
+            $userPasswordConfirm = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
+                [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureUserPasswordConfirm)
+            )
+            
+            $userPasswordConfirm = $userPasswordConfirm.Trim()
+            
+            if ($userPassword -ne $userPasswordConfirm) {
+                Write-Host "Le password non coincidono!" -ForegroundColor Red
+                continue
+            }
+            
+            $validUserPassword = $true
+            Write-Host "OK" -ForegroundColor Green
+        }
+        
+        $usersList += "${userEmail}:${userPassword}"
+        Write-Host "Utente $userEmail aggiunto con successo" -ForegroundColor Green
+        
+        Write-Host ""
+        $continue = Read-Host "Aggiungere un altro utente? (s/N)"
+        if ($continue -ne "s" -and $continue -ne "S") {
+            $addMore = $false
+        }
+    }
+    
+    Write-Host ""
+    Write-Host "Totale utenti aggiunti: $($usersList.Count)" -ForegroundColor Green
+}
+
+$usersString = ""
+if ($usersList.Count -gt 0) {
+    $usersString = $usersList -join ","
+}
+
+Write-Host ""
+
+
 # creazione file .env
 
 Write-Host "Creazione file .env..." -ForegroundColor Yellow
@@ -210,6 +317,7 @@ Write-Host "Creazione file .env..." -ForegroundColor Yellow
 $envContent = "JWT_SECRET=$jwtSecret`n"
 $envContent += "ADMIN_USERNAME=$adminEmail`n"
 $envContent += "ADMIN_PASSWORD=$adminPassword`n"
+$envContent += "USERS=$usersString`n"
 
 [System.IO.File]::WriteAllText("$PWD\.env", $envContent, [System.Text.UTF8Encoding]::new($false))
 
@@ -226,6 +334,13 @@ Write-Host "File .env creato con:"
 Write-Host "  - JWT_SECRET (generato)" -ForegroundColor Gray
 Write-Host "  - ADMIN_USERNAME: $adminEmail" -ForegroundColor Gray
 Write-Host "  - ADMIN_PASSWORD: ****" -ForegroundColor Gray
+if ($usersList.Count -gt 0) {
+    Write-Host "  - USERS: $($usersList.Count) utenti configurati" -ForegroundColor Gray
+    foreach ($user in $usersList) {
+        $userEmail = $user.Split(':')[0]
+        Write-Host "    - $userEmail" -ForegroundColor DarkGray
+    }
+}
 Write-Host ""
 Write-Host "Prossimo passo: docker-compose up -d" -ForegroundColor Gray
 Write-Host ""

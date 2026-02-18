@@ -209,6 +209,117 @@ jwt_secret=$(generate_jwt_secret)
 echo -e "${GREEN}OK${NC}"
 echo ""
 
+
+echo -e "${YELLOW}[4/4] Configurazione Utenti (opzionale)${NC}"
+echo ""
+echo -e "${GRAY}Vuoi aggiungere utenti con accesso limitato? (s/N)${NC}"
+read add_users
+
+users_list=()
+
+if [ "$add_users" = "s" ] || [ "$add_users" = "S" ]; then
+    add_more=true
+    
+    while [ "$add_more" = true ]; do
+        echo ""
+        echo -e "${CYAN}--- Nuovo utente ---${NC}"
+        
+        user_email=""
+        valid_user_email=false
+        
+        while [ "$valid_user_email" = false ]; do
+            read -p "Email utente: " user_email
+            user_email=$(echo "$user_email" | xargs)
+            
+            if [ -z "$user_email" ]; then
+                echo -e "${RED}Email non puo essere vuota!${NC}"
+                continue
+            fi
+            
+            if ! validate_email "$user_email"; then
+                echo -e "${RED}Email non valida!${NC}"
+                continue
+            fi
+            
+            #se email già usata
+            if [ "$user_email" = "$admin_email" ]; then
+                echo -e "${RED}Email gia usata dall'admin!${NC}"
+                continue
+            fi
+            
+            email_exists=false
+            for existing_user in "${users_list[@]}"; do
+                existing_email=$(echo "$existing_user" | cut -d':' -f1)
+                if [ "$existing_email" = "$user_email" ]; then
+                    email_exists=true
+                    break
+                fi
+            done
+            
+            if [ "$email_exists" = true ]; then
+                echo -e "${RED}Email gia usata da un altro utente!${NC}"
+                continue
+            fi
+            
+            valid_user_email=true
+            echo -e "${GREEN}OK${NC}"
+        done
+        
+        user_password=""
+        valid_user_password=false
+        
+        while [ "$valid_user_password" = false ]; do
+            user_password=$(read_secret "Password utente: ")
+            user_password=$(echo "$user_password" | xargs)
+            
+            if [ -z "$user_password" ]; then
+                echo -e "${RED}Password non puo essere vuota!${NC}"
+                continue
+            fi
+            
+            if ! validate_password "$user_password"; then
+                echo -e "${RED}Password non soddisfa i requisiti!${NC}"
+                echo -e "${GRAY}Requisiti: min 8 caratteri, maiuscola, minuscola, numero, carattere speciale${NC}"
+                continue
+            fi
+            
+            echo ""
+            user_password_confirm=$(read_secret "Conferma password: ")
+            user_password_confirm=$(echo "$user_password_confirm" | xargs)
+            
+            if [ "$user_password" != "$user_password_confirm" ]; then
+                echo -e "${RED}Le password non coincidono!${NC}"
+                continue
+            fi
+            
+            valid_user_password=true
+            echo -e "${GREEN}OK${NC}"
+        done
+        
+        # add alla lista
+        users_list+=("${user_email}:${user_password}")
+        echo -e "${GREEN}Utente $user_email aggiunto con successo${NC}"
+        
+        #richiesta aggiungere altri
+        echo ""
+        read -p "Aggiungere un altro utente? (s/N): " continue_add
+        if [ "$continue_add" != "s" ] && [ "$continue_add" != "S" ]; then
+            add_more=false
+        fi
+    done
+    
+    echo ""
+    echo -e "${GREEN}Totale utenti aggiunti: ${#users_list[@]}${NC}"
+fi
+
+users_string=""
+if [ ${#users_list[@]} -gt 0 ]; then
+    users_string=$(IFS=,; echo "${users_list[*]}")
+fi
+
+echo ""
+
+
 # creazione file .env
 
 echo -e "${YELLOW}Creazione file .env...${NC}"
@@ -217,6 +328,7 @@ cat > .env << EOF
 JWT_SECRET=$jwt_secret
 ADMIN_USERNAME=$admin_email
 ADMIN_PASSWORD=$admin_password
+USERS=$users_string
 EOF
 
 echo -e "${GREEN}OK${NC}"
@@ -235,6 +347,13 @@ echo "File .env creato con:"
 echo -e "${GRAY}  - JWT_SECRET (generato)${NC}"
 echo -e "${GRAY}  - ADMIN_USERNAME: $admin_email${NC}"
 echo -e "${GRAY}  - ADMIN_PASSWORD: ****${NC}"
+if [ ${#users_list[@]} -gt 0 ]; then
+    echo -e "${GRAY}  - USERS: ${#users_list[@]} utenti configurati${NC}"
+    for user_entry in "${users_list[@]}"; do
+        user_email=$(echo "$user_entry" | cut -d':' -f1)
+        echo -e "${GRAY}    - $user_email${NC}"
+    done
+fi
 echo ""
 echo -e "${GRAY}Prossimo passo: docker-compose up -d${NC}"
 echo ""
