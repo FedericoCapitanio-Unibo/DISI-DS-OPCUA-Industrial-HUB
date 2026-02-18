@@ -8,6 +8,7 @@ RUN apt-get update && \
     gcc \
     curl \
     iptables \
+    sqlite3 \
     && rm -rf /var/lib/apt/lists/*
 
 # installazione uv 
