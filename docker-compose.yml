@@ -79,6 +79,8 @@ services:
       context: .
       dockerfile: Dockerfile.node
     container_name: hub-node-a
+    cap_add:
+      - NET_ADMIN
     env_file:
       - .env
     environment:
@@ -104,6 +106,8 @@ services:
       context: .
       dockerfile: Dockerfile.node
     container_name: hub-node-b
+    cap_add:
+      - NET_ADMIN
     env_file:
       - .env
     environment:
@@ -129,6 +133,8 @@ services:
       context: .
       dockerfile: Dockerfile.node
     container_name: hub-node-c
+    cap_add:
+      - NET_ADMIN
     env_file:
       - .env
     environment:
